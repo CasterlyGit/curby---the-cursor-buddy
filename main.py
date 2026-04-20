@@ -1,5 +1,5 @@
 """
-Cursor Buddy — MVP entry point.
+Curby — the cursor buddy. MVP entry point.
 
 Usage:
   set ANTHROPIC_API_KEY=sk-ant-...
@@ -21,8 +21,8 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 
-from src.app import CursorBuddyApp
+from src.app import CurbyApp
 
 if __name__ == "__main__":
-    app = CursorBuddyApp()
+    app = CurbyApp()
     sys.exit(app.run())

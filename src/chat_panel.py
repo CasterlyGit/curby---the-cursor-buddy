@@ -98,7 +98,7 @@ class ChatPanel(QWidget):
 
         # Header row
         header = QHBoxLayout()
-        title = QLabel("Cursor Buddy")
+        title = QLabel("Curby")
         title.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         title.setStyleSheet("color: #8080ee; background: transparent;")
         self._status = QLabel("ready")

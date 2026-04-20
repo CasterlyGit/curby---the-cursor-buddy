@@ -85,7 +85,7 @@ class BuddyWindow(QWidget):
 
         # Header
         header = QHBoxLayout()
-        title = QLabel("Cursor Buddy")
+        title = QLabel("Curby")
         title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         title.setStyleSheet("color: #89b4fa; font-size: 11px;")
         self._status = QLabel("ready")

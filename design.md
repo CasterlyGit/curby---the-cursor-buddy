@@ -1,4 +1,4 @@
-# Cursor Buddy — Design Document
+# Curby — the cursor buddy — Design Document
 _Last updated: session 4 — guided phantom cursor route_
 
 ---
@@ -85,7 +85,7 @@ tests/
 Ctrl+Shift+Space pressed
   -> pynput GlobalHotKeys callback (listener thread)
     -> _Bridge.hotkey_fired signal (crosses to Qt main thread)
-      -> CursorBuddyApp._activate()
+      -> CurbyApp._activate()
         -> VoiceWorker(cx, cy).start()
 
 VoiceWorker.run() [QThread]:
@@ -165,7 +165,7 @@ After `speak()` fires (non-blocking), icon is set to "idle" after 0.5s sleep in 
 - `VoiceWorker` not cancelled if user presses hotkey while already running (silently ignored)
 
 ### Next session starting points
-1. **Multi-turn conversation** — keep a `messages: list` in `CursorBuddyApp`, pass history to `ask()` each turn
+1. **Multi-turn conversation** — keep a `messages: list` in `CurbyApp`, pass history to `ask()` each turn
 2. **Guided cursor** — new `src/ghost_cursor.py`, frameless overlay that moves a semi-transparent arrow via `QPropertyAnimation` to demonstrate UI steps
 3. **MPLAB detection** — `import win32gui; win32gui.GetWindowText(win32gui.GetForegroundWindow())` to detect MPLAB, append tool/peripheral context to the system prompt
 4. **Better idle sync** — pyttsx3 has an `on_end_utterance` event; use it to emit the idle signal accurately

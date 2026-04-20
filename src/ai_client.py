@@ -16,7 +16,7 @@ _SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
 # ── System prompts ────────────────────────────────────────────────────────────
 
 _SYSTEM = (
-    "you are cursor buddy, a voice assistant that lives near the user's cursor. "
+    "you are curby, a voice assistant that lives near the user's cursor. "
     "you can see a screenshot of exactly what they're looking at. "
     "be conversational — like a knowledgeable friend sitting next to them. "
     "write for the ear, not the eye: short sentences, no lists, no markdown, no bullet points. "
@@ -27,7 +27,7 @@ _SYSTEM = (
 )
 
 _GUIDED_SYSTEM = (
-    "you are cursor buddy, guiding a user through a ui task one step at a time. "
+    "you are curby, guiding a user through a ui task one step at a time. "
     "you can see a screenshot of the user's screen right now. "
     "the image pixel coordinates map 1:1 to screen coordinates — measure carefully. "
     "\n\n"

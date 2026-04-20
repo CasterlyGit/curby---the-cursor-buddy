@@ -220,7 +220,7 @@ class AssistantWorker(QThread):
             self.finished.emit()
 
 
-class CursorBuddyApp:
+class CurbyApp:
     def __init__(self):
         self._qt = QApplication.instance() or QApplication(sys.argv)
         self._bridge = _Bridge()
@@ -307,8 +307,8 @@ class CursorBuddyApp:
         self._cursor.start()
         self._hotkey.start()
         self._icon.show()
-        speak("cursor buddy ready.")
-        print(f"Cursor Buddy ready. Press {HOTKEY} to speak.")
+        speak("curby ready.")
+        print(f"Curby ready. Press {HOTKEY} to speak.")
         code = self._qt.exec()
         self._cursor.stop()
         self._hotkey.stop()
