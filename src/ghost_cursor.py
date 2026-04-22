@@ -3,18 +3,37 @@ import math
 import time
 
 from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QPoint, QPointF, QPropertyAnimation, QEasingCurve, pyqtSignal, QTimer
-from PyQt6.QtGui import QPainter, QColor, QRadialGradient, QPen
+from PyQt6.QtCore import (
+    Qt,
+    QPoint,
+    QPointF,
+    QPropertyAnimation,
+    QEasingCurve,
+    pyqtSignal,
+    QTimer,
+)
+from PyQt6.QtGui import (
+    QPainter,
+    QColor,
+    QRadialGradient,
+    QLinearGradient,
+    QPen,
+    QPainterPath,
+)
 
-# ── Vista / Curby palette ────────────────────────────────────────────────────
-VIOLET       = QColor(167, 139, 250)   # #A78BFA primary accent
-BLUE         = QColor( 96, 165, 250)   # #60A5FA secondary accent
-VIOLET_LIGHT = QColor(196, 181, 253)   # #C4B5FD highlight
-WHITE_HOT    = QColor(255, 255, 255)   # bright core
+# ── Palette ──────────────────────────────────────────────────────────────────
+# Warm pink/red cursor body, violet/blue rings behind it for contrast.
+PINK_HOT   = QColor(236,  72, 153)   # #EC4899
+PINK_SOFT  = QColor(244, 114, 182)   # #F472B6
+ROSE       = QColor(251, 113, 133)   # #FB7185
+RED        = QColor(239,  68,  68)   # #EF4444
+VIOLET     = QColor(167, 139, 250)   # #A78BFA
+BLUE       = QColor( 96, 165, 250)   # #60A5FA
+WHITE_HOT  = QColor(255, 255, 255)
 
-SIZE = 96   # widget box (tip is at center)
+SIZE = 110   # widget box; tip of cursor = center of widget
 
-_GWL_EXSTYLE      = -20
+_GWL_EXSTYLE       = -20
 _WS_EX_TRANSPARENT = 0x00000020
 
 
@@ -41,54 +60,104 @@ class GhostCursor(QWidget):
         self._tick_timer.timeout.connect(self.update)
         self._tick_timer.start(16)
 
+    # ── Swoosh path ──────────────────────────────────────────────────────────
+
+    def _swoosh_path(self, cx: float, cy: float) -> QPainterPath:
+        """Nike-ish swoosh: narrow tail at upper-left, sweeps down-right, bulges in the
+        middle, tapers to a sharp tip at the bottom-right. The TIP lands on (cx, cy)
+        so animate_to places the sharp end on the target."""
+        path = QPainterPath()
+
+        # Tip is at (cx, cy). Everything else is offset from there.
+        tip   = QPointF(cx, cy)
+        tail  = QPointF(cx - 28, cy - 18)   # narrow start at upper-left
+
+        # Outer (lower) curve: tail → tip
+        path.moveTo(tail)
+        path.cubicTo(
+            QPointF(cx - 18, cy + 6),
+            QPointF(cx - 4, cy + 10),
+            tip,
+        )
+        # Inner (upper) curve: tip → tail, creates the swoosh bulge
+        path.cubicTo(
+            QPointF(cx - 6, cy - 2),
+            QPointF(cx - 18, cy - 10),
+            tail,
+        )
+        path.closeSubpath()
+        return path
+
+    # ── Paint ────────────────────────────────────────────────────────────────
+
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         cx = cy = SIZE // 2
-
         elapsed = time.time() - self._t0
 
-        # Two staggered sonar rings expanding outward
-        for phase_offset in (0.0, 0.5):
-            phase = ((elapsed * 0.9) + phase_offset) % 1.0
-            r = 14 + 30 * phase
-            alpha = int(180 * (1.0 - phase) ** 1.4)
-            color = VIOLET if phase_offset == 0.0 else BLUE
-            ring_color = QColor(color)
-            ring_color.setAlpha(alpha)
-            p.setPen(QPen(ring_color, 2))
+        # Sonar rings — violet/blue for contrast with the warm cursor body
+        for phase_offset, ring_color in ((0.0, VIOLET), (0.5, BLUE)):
+            phase = ((elapsed * 0.85) + phase_offset) % 1.0
+            r = 18 + 34 * phase
+            alpha = int(170 * (1.0 - phase) ** 1.4)
+            c = QColor(ring_color); c.setAlpha(alpha)
+            p.setPen(QPen(c, 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(cx, cy), r, r)
 
-        # Soft radial halo underneath
-        halo = QRadialGradient(cx, cy, 30)
-        halo_v = QColor(VIOLET); halo_v.setAlpha(110)
-        halo_b = QColor(BLUE);   halo_b.setAlpha(60)
-        halo_z = QColor(BLUE);   halo_z.setAlpha(0)
-        halo.setColorAt(0.0, halo_v)
-        halo.setColorAt(0.55, halo_b)
-        halo.setColorAt(1.0, halo_z)
+        # Soft pink halo underneath the swoosh
+        halo = QRadialGradient(cx - 4, cy - 2, 42)
+        h0 = QColor(PINK_HOT);  h0.setAlpha(120)
+        h1 = QColor(ROSE);      h1.setAlpha(70)
+        h2 = QColor(ROSE);      h2.setAlpha(0)
+        halo.setColorAt(0.0, h0)
+        halo.setColorAt(0.55, h1)
+        halo.setColorAt(1.0, h2)
         p.setBrush(halo)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(QPointF(cx, cy), 30, 30)
+        p.drawEllipse(QPointF(cx - 4, cy - 2), 42, 42)
 
-        # Pulsing outer ring (static radius, breathing opacity)
-        breathe = (math.sin(elapsed * 3.2) + 1) * 0.5
-        outer_ring = QColor(VIOLET_LIGHT)
-        outer_ring.setAlpha(int(120 + 90 * breathe))
-        p.setPen(QPen(outer_ring, 1.5))
+        # Swoosh body — pink/red gradient along the diagonal
+        path = self._swoosh_path(cx, cy)
+        body_grad = QLinearGradient(cx - 28, cy - 18, cx, cy)
+        body_grad.setColorAt(0.0, PINK_SOFT)
+        body_grad.setColorAt(0.55, PINK_HOT)
+        body_grad.setColorAt(1.0, RED)
+        p.setBrush(body_grad)
+
+        # Subtle rim for separation
+        rim_grad = QLinearGradient(cx - 28, cy - 18, cx, cy)
+        rim_grad.setColorAt(0.0, QColor(255, 200, 220, 160))
+        rim_grad.setColorAt(1.0, QColor(180, 20, 60, 200))
+        rim_pen = QPen()
+        rim_pen.setBrush(rim_grad)
+        rim_pen.setWidthF(1.2)
+        p.setPen(rim_pen)
+        p.drawPath(path)
+
+        # Bright highlight sliver on the upper edge of the swoosh
+        hl = QPainterPath()
+        hl.moveTo(cx - 22, cy - 14)
+        hl.cubicTo(
+            QPointF(cx - 14, cy - 8),
+            QPointF(cx - 6, cy - 5),
+            QPointF(cx - 2, cy - 2),
+        )
+        hl_pen = QPen(QColor(255, 255, 255, 150), 1.3)
+        p.setPen(hl_pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(QPointF(cx, cy), 12, 12)
+        p.drawPath(hl)
 
-        # Center bright core (gradient)
-        core = QRadialGradient(cx, cy, 8)
-        core.setColorAt(0.0, WHITE_HOT)
-        core.setColorAt(0.45, QColor(VIOLET_LIGHT))
-        core_edge = QColor(VIOLET); core_edge.setAlpha(0)
-        core.setColorAt(1.0, core_edge)
-        p.setBrush(core)
+        # Tiny bright dot exactly on the tip (so the target point reads clearly)
+        tip_glow = QRadialGradient(cx, cy, 7)
+        tip_glow.setColorAt(0.0, WHITE_HOT)
+        tip_glow.setColorAt(0.5, QColor(255, 200, 215, 230))
+        tip_edge = QColor(PINK_HOT); tip_edge.setAlpha(0)
+        tip_glow.setColorAt(1.0, tip_edge)
+        p.setBrush(tip_glow)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(QPointF(cx, cy), 7, 7)
+        p.drawEllipse(QPointF(cx, cy), 5, 5)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -98,6 +167,8 @@ class GhostCursor(QWidget):
             ctypes.windll.user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, style | _WS_EX_TRANSPARENT)
         except Exception:
             pass
+
+    # ── API ──────────────────────────────────────────────────────────────────
 
     def show_at(self, x: int, y: int):
         print(f"[ghost] show_at ({x},{y})")

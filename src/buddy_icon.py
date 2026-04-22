@@ -10,14 +10,14 @@ from PyQt6.QtGui import QPainter, QColor, QRadialGradient
 VIOLET       = QColor(167, 139, 250)   # #A78BFA
 BLUE         = QColor( 96, 165, 250)   # #60A5FA
 VIOLET_LIGHT = QColor(196, 181, 253)   # #C4B5FD
-AMBER        = QColor(251, 191,  36)   # #FBBF24 (listening)
+PINK_HOT     = QColor(236,  72, 153)   # #EC4899 (listening — warm rose)
 MINT         = QColor( 52, 211, 153)   # #34D399 (speaking)
 RED          = QColor(248, 113, 113)   # #F87171 (error)
 STEEL        = QColor( 71,  85, 105)   # #475569 (idle)
 
 STATE_ACCENT = {
     "idle":      STEEL,
-    "listening": AMBER,
+    "listening": PINK_HOT,
     "thinking":  VIOLET,
     "speaking":  MINT,
     "error":     RED,
