@@ -8,8 +8,12 @@ from PIL import Image
 
 _CLAUDE = r"C:\Users\tarun\.local\bin\claude.exe"
 
-# Matches [POINT:x,y] or [POINT:x,y:label] at end of response — same pattern as Clicky
-_POINT_RE = re.compile(r'\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::[^\]]*)?)\]\s*$')
+# [POINT:x,y] or [POINT:x,y:label] or [POINT:none] — trailing anchor tag
+_POINT_RE = re.compile(r'\[POINT:(?:none|(\d+)\s*,\s*(\d+)(?::[^\]]*)?)\]')
+# [BOX:x1,y1,x2,y2] — optional bounding rect of the target element
+_BOX_RE   = re.compile(r'\[BOX:\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]')
+# [ACTION:click|type|close|select|drag|open] — intent hint for the overlay
+_ACTION_RE = re.compile(r'\[ACTION:\s*(click|type|close|select|drag|open)\s*\]', re.I)
 
 _SENTENCE_RE = re.compile(r'(?<=[.!?])\s+')
 
@@ -27,13 +31,13 @@ _SYSTEM = (
 )
 
 _GUIDED_SYSTEM = (
-    "you are curby, guiding a user through a ui task one step at a time. "
+    "you are curby, guiding a user through a UI task one step at a time. "
     "you can see a real screenshot of the user's screen right now.\n\n"
     "BEFORE answering, silently look at the screenshot and identify:\n"
     "1. which app / website is this (vs code, youtube, gmail, etc.)\n"
     "2. what elements are actually visible: menus, buttons, icons, tabs, panels\n"
     "3. which one advances the task\n\n"
-    "then respond:\n"
+    "then respond with:\n"
     "- ONE short lowercase instruction (under 20 words) for the single next action\n"
     "- only reference elements you can literally SEE in the screenshot\n"
     "- never invent button names, menu labels, or text to type — if it's not visible, don't say it\n"
@@ -41,14 +45,21 @@ _GUIDED_SYSTEM = (
     "- if the task looks already done, say 'looks like you're already there' and end with [POINT:none]\n"
     "- if the next step is on a different screen (not this one), say so and end with [POINT:none]\n"
     "\n"
-    "end every response with a point tag on the same line: [POINT:x,y:label]\n"
-    "where x,y is the pixel center of the exact element to click in this screenshot "
-    "(image is full screen, coordinates map 1:1 to screen pixels after scaling).\n"
+    "end every response on ONE line with, in order:\n"
+    "  <instruction> [POINT:x,y:label] [BOX:x1,y1,x2,y2] [ACTION:click|type|close|select|drag|open]\n"
+    "\n"
+    "- POINT = pixel center of the exact element (image is full screen, coords map 1:1)\n"
+    "- BOX  = tight bounding rectangle around that element (x1<x2, y1<y2). if you can't see\n"
+    "        clean edges, estimate a small rect that clearly contains the clickable area.\n"
+    "- ACTION = the single most appropriate intent for the user to perform on this element.\n"
+    "\n"
+    "use [POINT:none] (drop BOX and ACTION) if the step isn't on this screen.\n"
     "\n"
     "examples:\n"
-    "click the three-dot menu next to the video [POINT:1820,240:more menu]\n"
-    "open the settings gear in the sidebar [POINT:62,740:settings gear]\n"
-    "use [POINT:none] if not applicable here"
+    "click the three-dot menu on the video [POINT:1820,240:more menu] [BOX:1806,226,1834,254] [ACTION:click]\n"
+    "open the settings gear in the sidebar [POINT:62,740:settings] [BOX:46,724,78,756] [ACTION:click]\n"
+    "type your search here [POINT:960,120:search box] [BOX:400,100,1520,140] [ACTION:type]\n"
+    "close this dialog [POINT:1190,312:close] [BOX:1176,298,1204,326] [ACTION:close]"
 )
 
 # ── Image encoding ────────────────────────────────────────────────────────────
@@ -142,16 +153,46 @@ def _send_messages(messages: list[dict], system: str) -> subprocess.Popen:
 
 def parse_point_tag(text: str) -> tuple[str, int | None, int | None]:
     """
-    Strip [POINT:x,y:label] or [POINT:none] from end of text.
-    Returns (clean_text, x, y) — x/y are None if [POINT:none] or no tag.
+    Strip [POINT:...] / [BOX:...] / [ACTION:...] from end of text.
+    Returns (clean_text, x, y) — for back-compat with older callers.
+    For full structured parse use parse_guided_tags.
     """
-    m = _POINT_RE.search(text)
-    if not m:
-        return text.strip(), None, None
-    clean = text[:m.start()].strip()
-    x = int(m.group(1)) if m.group(1) is not None else None
-    y = int(m.group(2)) if m.group(2) is not None else None
+    clean, x, y, _box, _action = parse_guided_tags(text)
     return clean, x, y
+
+
+def parse_guided_tags(
+    text: str,
+) -> tuple[str, int | None, int | None, tuple[int, int, int, int] | None, str | None]:
+    """
+    Returns (clean_text, x, y, box, action).
+      - x,y: pixel center or None if [POINT:none]
+      - box: (x1, y1, x2, y2) or None
+      - action: "click" | "type" | "close" | "select" | "drag" | "open" | None
+    """
+    x = y = None
+    box = None
+    action = None
+
+    clean = text
+    mp = _POINT_RE.search(clean)
+    if mp:
+        if mp.group(1) is not None and mp.group(2) is not None:
+            x, y = int(mp.group(1)), int(mp.group(2))
+        clean = clean[: mp.start()] + clean[mp.end():]
+
+    mb = _BOX_RE.search(clean)
+    if mb:
+        box = (int(mb.group(1)), int(mb.group(2)),
+               int(mb.group(3)), int(mb.group(4)))
+        clean = clean[: mb.start()] + clean[mb.end():]
+
+    ma = _ACTION_RE.search(clean)
+    if ma:
+        action = ma.group(1).lower()
+        clean = clean[: ma.start()] + clean[ma.end():]
+
+    return clean.strip(), x, y, box, action
 
 
 # ── Streaming voice reply ─────────────────────────────────────────────────────
@@ -219,26 +260,30 @@ def ask_stream(
 
 # ── Single guided step ────────────────────────────────────────────────────────
 
+GuidedStep = tuple[
+    str,                                  # spoken_text
+    int | None, int | None,               # point x, y
+    tuple[int, int, int, int] | None,     # box x1,y1,x2,y2
+    str | None,                           # action
+]
+
+
 def ask_guided_step(
     task: str,
     image: Image.Image,
     steps_done: list[str],
-) -> tuple[str, int | None, int | None]:
-    """
-    Blocking call. Returns (spoken_text, x, y).
-    x/y are None if task is complete or nothing actionable is visible.
-
-    Dispatch:
-      - If ANTHROPIC_API_KEY is set → use direct Anthropic API + Computer Use tool
-        (pixel-calibrated, much more accurate — Clicky's approach).
-      - Otherwise → use the Claude CLI with the [POINT:x,y:label] text-tag format.
-    """
-    # Prefer API path when available
+) -> GuidedStep:
+    """Returns (text, x, y, box, action). Any of the later four may be None."""
     try:
         from src.ai_client_api import is_api_available, ask_guided_step_api
         if is_api_available():
             try:
-                return ask_guided_step_api(task, image, steps_done)
+                text, x, y = ask_guided_step_api(task, image, steps_done)
+                # Computer Use returns a point only; synthesize a small default box around it
+                box = None
+                if x is not None and y is not None:
+                    box = (x - 18, y - 18, x + 18, y + 18)
+                return text, x, y, box, "click"
             except Exception as e:
                 print(f"[api error] {e} — falling back to CLI")
     except ImportError:
@@ -266,10 +311,10 @@ def ask_guided_step(
                     if block.get("type") == "text":
                         raw = block["text"].strip()
                         print(f"[guided/cli] raw response: {raw!r}")
-                        spoken, x, y = parse_point_tag(raw)
-                        return spoken, x, y
+                        text, x, y, box, action = parse_guided_tags(raw)
+                        return text, x, y, box, action
         except (json.JSONDecodeError, KeyError):
             continue
 
     print(f"[guided/cli] no response parsed")
-    return "sorry, i couldn't figure out the next step.", None, None
+    return "sorry, i couldn't figure out the next step.", None, None, None, None

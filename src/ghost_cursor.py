@@ -2,7 +2,6 @@ import ctypes
 import math
 import random
 import time
-from collections import deque
 
 from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import (
@@ -21,44 +20,50 @@ from PyQt6.QtGui import (
     QLinearGradient,
     QPen,
     QPainterPath,
-    QTransform,
 )
 
 # ── Palette ──────────────────────────────────────────────────────────────────
-PINK_HOT   = QColor(236,  72, 153)
-PINK_SOFT  = QColor(244, 114, 182)
-ROSE       = QColor(251, 113, 133)
-RED        = QColor(239,  68,  68)
-VIOLET     = QColor(167, 139, 250)
-BLUE       = QColor( 96, 165, 250)
-MINT       = QColor( 52, 211, 153)
-AMBER      = QColor(251, 191,  36)
-WHITE_HOT  = QColor(255, 255, 255)
+PINK_HOT    = QColor(236,  72, 153)
+PINK_SOFT   = QColor(244, 114, 182)
+ROSE        = QColor(251, 113, 133)
+RED         = QColor(239,  68,  68)
+VIOLET      = QColor(167, 139, 250)
+BLUE        = QColor( 96, 165, 250)
+MINT        = QColor( 52, 211, 153)
+GOLD        = QColor(253, 224,  71)   # #FDE047 thinking accent
+AMBER       = QColor(251, 191,  36)
+WHITE_HOT   = QColor(255, 255, 255)
 
-# Pointing-mode body colors — cool cyan → indigo so mode is unmistakable
-POINT_BODY_START = QColor(125, 211, 252)   # sky-300
-POINT_BODY_MID   = QColor( 59, 130, 246)   # blue-500
-POINT_BODY_END   = QColor( 79,  70, 229)   # indigo-600
+# Pointing (guidance)
+POINT_BODY_START = QColor(125, 211, 252)
+POINT_BODY_MID   = QColor( 59, 130, 246)
+POINT_BODY_END   = QColor( 79,  70, 229)
 
 _STATE_RINGS = {
     "idle":      (VIOLET, BLUE),
-    "thinking":  (VIOLET, PINK_HOT),
+    "thinking":  (AMBER, GOLD),         # palette-harmonious warm glow
     "listening": (PINK_HOT, ROSE),
     "speaking":  (MINT, BLUE),
     "error":     (RED, AMBER),
 }
 
-SIZE = 110
-FOLLOW_OFFSET_X = 28
-FOLLOW_OFFSET_Y = 24
+SIZE = 120
+FOLLOW_OFFSET_X = 30
+FOLLOW_OFFSET_Y = 26
 SPRING = 0.14
-BOB_Y_AMP = 4.5
-BOB_X_AMP = 2.8
-BOB_Y_FREQ = 2.6
-BOB_X_FREQ = 1.9
-IDLE_BORED_AFTER_S = 3.0
-SPARKLE_COUNT = 3
-SPARKLE_COUNT_BURST = 8   # extra sparkles during mode flash
+
+# Ambient bob — bigger + quicker so it reads as alive
+BOB_Y_AMP = 9.0
+BOB_X_AMP = 6.0
+BOB_Y_FREQ = 2.9
+BOB_X_FREQ = 2.0
+WOB_AMP = 2.6
+WOB_FREQ = 6.0
+
+IDLE_BORED_AFTER_S = 0.9   # kicks in fast
+
+SPARKLE_COUNT = 4
+SPARKLE_COUNT_BURST = 10
 
 _GWL_EXSTYLE       = -20
 _WS_EX_TRANSPARENT = 0x00000020
@@ -87,21 +92,17 @@ class GhostCursor(QWidget):
         self._mode = self.MODE_FOLLOW
         self._state = "idle"
 
-        # Where the user's real cursor is (always tracked, even in pointing mode)
         self._real_user_x = 0.0
         self._real_user_y = 0.0
         self._last_move_t = time.time()
 
-        # Where the ghost wants to be (user cursor + offset, in follow mode)
         self._target_x = 0.0
         self._target_y = 0.0
-        # Where the ghost currently is (painted position, after spring+bob)
         self._smoothed_x = 0.0
         self._smoothed_y = 0.0
 
         self._sparkles = [_Sparkle() for _ in range(SPARKLE_COUNT)]
         self._burst_sparkles: list[_Sparkle] = []
-
         self._mode_change_t = 0.0
 
         self._anim: QPropertyAnimation | None = None
@@ -113,7 +114,6 @@ class GhostCursor(QWidget):
     # ── Follow mode ──────────────────────────────────────────────────────────
 
     def follow(self, x: int, y: int):
-        # Detect if the user actually moved — reset boredom clock only then
         moved = abs(x - self._real_user_x) > 0.5 or abs(y - self._real_user_y) > 0.5
         self._real_user_x = float(x)
         self._real_user_y = float(y)
@@ -142,42 +142,29 @@ class GhostCursor(QWidget):
         if not self.isVisible():
             self.show()
 
-    def animate_to(self, x: int, y: int, ms: int = 900):
-        """Start every pointing animation from the user's REAL cursor position,
-        regardless of where the ghost was. Gives a clear 'from here to there' sweep
-        on every step."""
+    def animate_to(self, x: int, y: int, ms: int = 950):
+        """Every step's animation starts from the user's real cursor for clarity."""
         was_following = self._mode == self.MODE_FOLLOW
         self._mode = self.MODE_POINTING
         if was_following:
             self._mode_change_t = time.time()
             self._emit_burst()
 
-        # Snap to user's cursor (with offset) as the starting point
         start_x = self._real_user_x + FOLLOW_OFFSET_X
         start_y = self._real_user_y + FOLLOW_OFFSET_Y
         start_x, start_y = self._clamp_to_screens(start_x, start_y)
         self._place(start_x, start_y)
-        self._smoothed_x = start_x
-        self._smoothed_y = start_y
+        self._smoothed_x, self._smoothed_y = start_x, start_y
 
         if not self.isVisible():
             self.show()
-        if self._anim:
-            try:
-                self._anim.finished.disconnect()
-            except Exception:
-                pass
-            self._anim.stop()
-            self._anim.deleteLater()
-            self._anim = None
+        self._cancel_anim()
 
         end_x, end_y = self._clamp_to_screens(float(x), float(y))
-        start_top = QPoint(int(start_x - SIZE / 2), int(start_y - SIZE / 2))
-        end_top   = QPoint(int(end_x   - SIZE / 2), int(end_y   - SIZE / 2))
         anim = QPropertyAnimation(self, b"pos", self)
         anim.setDuration(ms)
-        anim.setStartValue(start_top)
-        anim.setEndValue(end_top)
+        anim.setStartValue(QPoint(int(start_x - SIZE / 2), int(start_y - SIZE / 2)))
+        anim.setEndValue(QPoint(int(end_x - SIZE / 2), int(end_y - SIZE / 2)))
         anim.setEasingCurve(QEasingCurve.Type.OutExpo)
 
         def _on_done():
@@ -189,6 +176,13 @@ class GhostCursor(QWidget):
         anim.start()
 
     def release(self):
+        self._cancel_anim()
+        if self._mode != self.MODE_FOLLOW:
+            self._mode_change_t = time.time()
+            self._emit_burst()
+        self._mode = self.MODE_FOLLOW
+
+    def _cancel_anim(self):
         if self._anim:
             try:
                 self._anim.finished.disconnect()
@@ -197,22 +191,20 @@ class GhostCursor(QWidget):
             self._anim.stop()
             self._anim.deleteLater()
             self._anim = None
-        if self._mode != self.MODE_FOLLOW:
-            self._mode_change_t = time.time()
-            self._emit_burst()
-        self._mode = self.MODE_FOLLOW
 
-    # ── Multi-monitor clamp ──────────────────────────────────────────────────
+    # ── Multi-monitor clamp (per-screen) ─────────────────────────────────────
 
     def _clamp_to_screens(self, cx: float, cy: float) -> tuple[float, float]:
-        """Keep the widget box inside the virtual desktop (union of all monitors)."""
-        screen = QApplication.primaryScreen()
+        """Clamp to the SCREEN the user's cursor is on, not just the virtual rect —
+        this avoids dead zones in non-rectangular multi-monitor layouts."""
+        probe = QPoint(int(self._real_user_x), int(self._real_user_y))
+        screen = QApplication.screenAt(probe) or QApplication.primaryScreen()
         if screen is None:
             return cx, cy
-        virt = screen.virtualGeometry()
+        geom = screen.availableGeometry()
         half = SIZE / 2
-        cx = max(virt.left() + half, min(cx, virt.right() - half))
-        cy = max(virt.top() + half, min(cy, virt.bottom() - half))
+        cx = max(geom.left() + half, min(cx, geom.right() - half))
+        cy = max(geom.top() + half, min(cy, geom.bottom() - half))
         return cx, cy
 
     # ── Tick ─────────────────────────────────────────────────────────────────
@@ -223,28 +215,32 @@ class GhostCursor(QWidget):
             self._smoothed_x += (self._target_x - self._smoothed_x) * SPRING
             self._smoothed_y += (self._target_y - self._smoothed_y) * SPRING
             elapsed = now - self._t0
+
             bob_y = BOB_Y_AMP * math.sin(elapsed * BOB_Y_FREQ)
             bob_x = BOB_X_AMP * math.sin(elapsed * BOB_X_FREQ + 0.7)
-            wob_y = 1.3 * math.sin(elapsed * 5.5)
+            wob_y = WOB_AMP * math.sin(elapsed * WOB_FREQ)
 
-            # Idle-long: if user hasn't moved for a while, add lazy floating
             idle_s = now - self._last_move_t
             if idle_s > IDLE_BORED_AFTER_S:
-                f = min(1.0, (idle_s - IDLE_BORED_AFTER_S) / 2.0)
-                bob_x += f * 4.0 * math.sin(elapsed * 0.8)
-                bob_y += f * 3.0 * math.sin(elapsed * 1.1 + 1.3)
+                f = min(1.0, (idle_s - IDLE_BORED_AFTER_S) / 1.2)
+                bob_x += f * 5.0 * math.sin(elapsed * 0.9)
+                bob_y += f * 4.0 * math.sin(elapsed * 1.2 + 1.3)
 
             px = self._smoothed_x + bob_x
             py = self._smoothed_y + bob_y + wob_y
             px, py = self._clamp_to_screens(px, py)
             self._place(px, py)
 
-        # Sparkles always tick
         for s in self._sparkles:
             s.step()
         self._burst_sparkles = [s for s in self._burst_sparkles if not s.dead]
         for s in self._burst_sparkles:
             s.step()
+
+        # Raise periodically — helps Qt keep the always-on-top ordering across
+        # monitor boundaries on Windows.
+        if int(now * 2) % 4 == 0:
+            self.raise_()
 
         self.update()
 
@@ -252,7 +248,6 @@ class GhostCursor(QWidget):
         self.move(int(cx - SIZE / 2), int(cy - SIZE / 2))
 
     def _emit_burst(self):
-        """Spawn a quick burst of sparkles when the mode changes."""
         self._burst_sparkles.extend(_Sparkle(burst=True) for _ in range(SPARKLE_COUNT_BURST))
 
     # ── Paint ────────────────────────────────────────────────────────────────
@@ -260,10 +255,10 @@ class GhostCursor(QWidget):
     def _swoosh_path(self, cx: float, cy: float) -> QPainterPath:
         path = QPainterPath()
         tip  = QPointF(cx, cy)
-        tail = QPointF(cx - 28, cy - 18)
+        tail = QPointF(cx - 30, cy - 20)
         path.moveTo(tail)
-        path.cubicTo(QPointF(cx - 18, cy + 6), QPointF(cx - 4, cy + 10), tip)
-        path.cubicTo(QPointF(cx - 6, cy - 2), QPointF(cx - 18, cy - 10), tail)
+        path.cubicTo(QPointF(cx - 20, cy + 6), QPointF(cx - 4, cy + 12), tip)
+        path.cubicTo(QPointF(cx - 6, cy - 2), QPointF(cx - 20, cy - 10), tail)
         path.closeSubpath()
         return path
 
@@ -276,46 +271,49 @@ class GhostCursor(QWidget):
 
         ring_a, ring_b = _STATE_RINGS.get(self._state, _STATE_RINGS["idle"])
         is_pointing = self._mode == self.MODE_POINTING
+        is_listening = self._state == "listening"
         is_thinking = self._state == "thinking"
 
-        # Sparkles behind everything
+        # Breathing scale for thinking (subtle)
+        thinking_scale = 1.0 + (0.07 * math.sin(elapsed * 3.6)) if is_thinking else 1.0
+
         for s in self._sparkles:
             s.paint(p, cx, cy)
         for s in self._burst_sparkles:
             s.paint(p, cx, cy)
 
-        # Sonar rings
-        ring_speed = 1.1 if is_pointing or is_thinking else 0.6
-        ring_max = 36 if is_pointing or is_thinking else 22
-        ring_base_r = 16 if is_pointing or is_thinking else 10
-        ring_alpha_peak = 190 if is_pointing or is_thinking else 110
+        ring_speed = 1.3 if (is_pointing or is_thinking or is_listening) else 0.65
+        ring_max   = 40 if is_pointing else (34 if (is_thinking or is_listening) else 22)
+        ring_base  = 18 if is_pointing else (14 if (is_thinking or is_listening) else 10)
+        ring_peak  = 200 if is_pointing else (170 if (is_thinking or is_listening) else 110)
         for phase_offset, ring_color in ((0.0, ring_a), (0.5, ring_b)):
             phase = ((elapsed * ring_speed) + phase_offset) % 1.0
-            r = ring_base_r + ring_max * phase
-            alpha = int(ring_alpha_peak * (1.0 - phase) ** 1.4)
+            r = ring_base + ring_max * phase
+            alpha = int(ring_peak * (1.0 - phase) ** 1.4)
             c = QColor(ring_color); c.setAlpha(alpha)
             p.setPen(QPen(c, 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(cx, cy), r, r)
 
-        # Halo — color depends on mode
         if is_pointing:
-            halo_a = QColor(POINT_BODY_MID);   halo_a.setAlpha(140)
-            halo_b = QColor(POINT_BODY_START); halo_b.setAlpha(70)
+            halo_a = QColor(POINT_BODY_MID);   halo_a.setAlpha(150)
+            halo_b = QColor(POINT_BODY_START); halo_b.setAlpha(75)
+        elif is_thinking:
+            halo_a = QColor(GOLD);  halo_a.setAlpha(140)
+            halo_b = QColor(AMBER); halo_b.setAlpha(70)
         else:
-            halo_a = QColor(PINK_HOT); halo_a.setAlpha(130 if is_thinking else 80)
-            halo_b = QColor(ROSE);     halo_b.setAlpha(70 if is_thinking else 45)
-        halo_edge = QColor(0, 0, 0, 0)
-        halo = QRadialGradient(cx - 4, cy - 2, 42)
+            halo_a = QColor(PINK_HOT); halo_a.setAlpha(100 if not is_listening else 150)
+            halo_b = QColor(ROSE);     halo_b.setAlpha(55 if not is_listening else 85)
+        halo = QRadialGradient(cx - 4, cy - 2, 46)
         halo.setColorAt(0.0, halo_a)
         halo.setColorAt(0.55, halo_b)
-        halo.setColorAt(1.0, halo_edge)
+        halo.setColorAt(1.0, QColor(0, 0, 0, 0))
         p.setBrush(halo)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(QPointF(cx - 4, cy - 2), 42, 42)
+        p.drawEllipse(QPointF(cx - 4, cy - 2), 46, 46)
 
-        # Body colors
-        if is_thinking:
+        # Body colors by state
+        if is_listening:
             hue = int((elapsed * 140) % 360)
             body_start = QColor.fromHsl(hue, 220, 200)
             body_mid   = QColor.fromHsl((hue + 25) % 360, 240, 170)
@@ -335,33 +333,46 @@ class GhostCursor(QWidget):
             rim_start  = QColor(255, 200, 220, 160)
             rim_end    = QColor(180,  20,  60, 200)
 
-        # Rotation — thinking spins, pointing leans slightly forward, follow is steady
+        # Rotation & scale — listening SPINS; pointing gently leans; thinking breathes.
         rotation = 0.0
-        if is_thinking:
-            rotation = (elapsed * 180.0) % 360.0
+        if is_listening:
+            rotation = (elapsed * 200.0) % 360.0
         elif is_pointing:
-            rotation = 8.0 * math.sin(elapsed * 2.1)  # gentle lean
+            rotation = 8.0 * math.sin(elapsed * 2.1)
 
         p.save()
         p.translate(cx, cy)
+        if thinking_scale != 1.0:
+            p.scale(thinking_scale, thinking_scale)
         p.rotate(rotation)
         p.translate(-cx, -cy)
 
         path = self._swoosh_path(cx, cy)
-        body_grad = QLinearGradient(cx - 28, cy - 18, cx, cy)
+        body_grad = QLinearGradient(cx - 30, cy - 20, cx, cy)
         body_grad.setColorAt(0.0, body_start)
         body_grad.setColorAt(0.55, body_mid)
         body_grad.setColorAt(1.0, body_end)
         p.setBrush(body_grad)
 
-        rim_grad = QLinearGradient(cx - 28, cy - 18, cx, cy)
+        rim_grad = QLinearGradient(cx - 30, cy - 20, cx, cy)
         rim_grad.setColorAt(0.0, rim_start)
         rim_grad.setColorAt(1.0, rim_end)
-        rim_pen = QPen(); rim_pen.setBrush(rim_grad); rim_pen.setWidthF(1.3)
+        rim_pen = QPen(); rim_pen.setBrush(rim_grad); rim_pen.setWidthF(1.4)
         p.setPen(rim_pen)
         p.drawPath(path)
 
-        # Highlight sliver
+        # Thinking golden shimmer overlay — runs along the swoosh
+        if is_thinking:
+            shimmer_progress = (elapsed * 1.8) % 1.0
+            sg = QLinearGradient(cx - 30, cy - 20, cx, cy)
+            sg.setColorAt(max(0.0, shimmer_progress - 0.15), QColor(GOLD.red(), GOLD.green(), GOLD.blue(), 0))
+            sg.setColorAt(shimmer_progress, QColor(GOLD.red(), GOLD.green(), GOLD.blue(), 180))
+            sg.setColorAt(min(1.0, shimmer_progress + 0.15), QColor(GOLD.red(), GOLD.green(), GOLD.blue(), 0))
+            sh_pen = QPen(); sh_pen.setBrush(sg); sh_pen.setWidthF(2.2)
+            p.setPen(sh_pen)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPath(path)
+
         hl = QPainterPath()
         hl.moveTo(cx - 22, cy - 14)
         hl.cubicTo(
@@ -369,30 +380,30 @@ class GhostCursor(QWidget):
             QPointF(cx - 6, cy - 5),
             QPointF(cx - 2, cy - 2),
         )
-        shimmer = 120 + int(70 * (math.sin(elapsed * 3.0) + 1) / 2)
-        p.setPen(QPen(QColor(255, 255, 255, shimmer), 1.3))
+        shimmer = 130 + int(80 * (math.sin(elapsed * 3.0) + 1) / 2)
+        p.setPen(QPen(QColor(255, 255, 255, shimmer), 1.4))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(hl)
 
         p.restore()
 
-        # Tip glow (unrotated, stays centered at tip for clear target read)
-        tip_glow = QRadialGradient(cx, cy, 8)
+        # Tip glow (always at tip)
+        tip_glow = QRadialGradient(cx, cy, 9)
         tip_glow.setColorAt(0.0, WHITE_HOT)
         tip_glow.setColorAt(0.5, QColor(255, 210, 220, 230))
         tip_edge = QColor(PINK_HOT); tip_edge.setAlpha(0)
         tip_glow.setColorAt(1.0, tip_edge)
         p.setBrush(tip_glow)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(QPointF(cx, cy), 5, 5)
+        p.drawEllipse(QPointF(cx, cy), 6, 6)
 
-        # Mode-change flash — brief white ring expanding from center
+        # Mode-change flash
         flash_age = now - self._mode_change_t if self._mode_change_t > 0 else 1.0
         if 0.0 <= flash_age <= 0.45:
             t = flash_age / 0.45
-            flash_r = 12 + 42 * t
-            flash_alpha = int(220 * (1 - t))
-            p.setPen(QPen(QColor(255, 255, 255, flash_alpha), 2.2))
+            flash_r = 14 + 46 * t
+            flash_alpha = int(230 * (1 - t))
+            p.setPen(QPen(QColor(255, 255, 255, flash_alpha), 2.5))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(QPointF(cx, cy), flash_r, flash_r)
 
@@ -407,12 +418,6 @@ class GhostCursor(QWidget):
 
 
 class _Sparkle:
-    """A tiny drifting particle that orbits the cursor tip.
-
-    burst=True variant is used for mode-change flourishes — short-lived, faster,
-    more numerous.
-    """
-
     def __init__(self, burst: bool = False):
         self.burst = burst
         self.dead = False
@@ -422,17 +427,17 @@ class _Sparkle:
         if self.burst:
             self.life = random.uniform(0.35, 0.65)
             self.radius = random.uniform(2, 8)
-            self.radial_vel = random.uniform(45, 80)
+            self.radial_vel = random.uniform(50, 90)
             self.angular_vel = random.uniform(-3.5, 3.5)
             self.size = random.uniform(1.6, 2.8)
             self.hue = random.choice([WHITE_HOT, PINK_SOFT, POINT_BODY_START])
         else:
-            self.life = random.uniform(1.2, 2.6)
-            self.radius = random.uniform(6, 26)
-            self.radial_vel = random.uniform(8, 16)
-            self.angular_vel = random.uniform(-0.8, 0.8)
+            self.life = random.uniform(1.0, 2.4)
+            self.radius = random.uniform(6, 28)
+            self.radial_vel = random.uniform(10, 18)
+            self.angular_vel = random.uniform(-0.9, 0.9)
             self.size = random.uniform(1.3, 2.4)
-            self.hue = random.choice([PINK_SOFT, VIOLET, WHITE_HOT])
+            self.hue = random.choice([PINK_SOFT, VIOLET, WHITE_HOT, GOLD])
         self.age = 0.0 if self.burst else random.uniform(0.0, self.life)
         self.angle = random.uniform(0, math.tau)
 

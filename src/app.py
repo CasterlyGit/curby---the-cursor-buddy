@@ -11,6 +11,8 @@ from src.cursor_tracker import CursorTracker
 from src.ghost_cursor import GhostCursor
 from src.speech_bubble import SpeechBubble
 from src.text_input_popup import TextInputPopup
+from src.guide_path import GuidePath
+from src.action_highlight import ActionHighlight
 
 HOTKEY_VOICE     = "<ctrl>+/"
 HOTKEY_VOICELESS = "<ctrl>+."
@@ -40,6 +42,10 @@ class _Bridge(QObject):
     bubble_show           = pyqtSignal(int, int, str)
     bubble_hide           = pyqtSignal()
     text_prompt_show      = pyqtSignal(int, int)
+    path_show             = pyqtSignal(int, int, int, int)  # sx, sy, ex, ey
+    path_hide             = pyqtSignal()
+    highlight_show        = pyqtSignal(int, int, int, int, str)  # x1,y1,x2,y2,action
+    highlight_hide        = pyqtSignal()
 
 
 class AssistantWorker(QThread):
@@ -248,21 +254,39 @@ class AssistantWorker(QThread):
 
                 self.state.emit("thinking")
                 print(f"[guided] step {step_num + 1} — asking Claude...")
-                spoken, x, y = ask_guided_step(task, current_image, steps_done)
+                spoken, x, y, box, action = ask_guided_step(task, current_image, steps_done)
 
                 if self._cancel.is_set():
                     break
 
-                print(f"[guided] response: {spoken!r}  point=({x},{y})")
+                print(f"[guided] response: {spoken!r}  point=({x},{y}) box={box} action={action}")
 
                 img_w, img_h = current_image.size
                 anchor_x, anchor_y = self.cx, self.cy
+
+                # Hide any previous step's overlays before showing new ones
+                self._bridge.highlight_hide.emit()
 
                 if x is not None and y is not None:
                     scale = max(img_w, img_h) / 1280 if max(img_w, img_h) > 1280 else 1.0
                     sx = int(x * scale) + current_left
                     sy = int(y * scale) + current_top
                     anchor_x, anchor_y = sx, sy
+
+                    # Dotted footstep path from user's current cursor → target
+                    user_x, user_y = self._get_pos()
+                    self._bridge.path_show.emit(user_x, user_y, sx, sy)
+
+                    # Action highlight box (if Claude gave one)
+                    if box is not None:
+                        bx1 = int(box[0] * scale) + current_left
+                        by1 = int(box[1] * scale) + current_top
+                        bx2 = int(box[2] * scale) + current_left
+                        by2 = int(box[3] * scale) + current_top
+                        self._bridge.highlight_show.emit(
+                            bx1, by1, bx2, by2, action or "click"
+                        )
+
                     print(f"[guided] animating ghost to screen ({sx}, {sy})")
                     self._bridge.guide_to.emit(sx, sy)
                 else:
@@ -295,6 +319,9 @@ class AssistantWorker(QThread):
 
                 if voiceless:
                     self._bridge.bubble_hide.emit()
+                # Clear previous step's path + highlight once user has acted
+                self._bridge.path_hide.emit()
+                self._bridge.highlight_hide.emit()
 
                 steps_done.append(spoken)
                 time.sleep(0.3)  # brief settle after change detected
@@ -323,6 +350,8 @@ class CurbyApp:
         self._ghost = GhostCursor()
         self._bubble = SpeechBubble()
         self._text_popup = TextInputPopup()
+        self._path = GuidePath()
+        self._highlight = ActionHighlight()
         self._cursor = CursorTracker(on_move=self._on_move)
         self._hotkey = keyboard.GlobalHotKeys({
             HOTKEY_VOICE:     self._on_voice_hotkey,
@@ -346,9 +375,15 @@ class CurbyApp:
         self._bridge.guide_show.connect(self._ghost.show_at)
         self._bridge.guide_to.connect(self._ghost.animate_to)
         self._bridge.guide_hide.connect(self._ghost.release)
+        self._bridge.guide_hide.connect(self._path.hide_path)
+        self._bridge.guide_hide.connect(self._highlight.hide_highlight)
         self._bridge.bubble_show.connect(self._on_bubble_show)
         self._bridge.bubble_hide.connect(self._bubble.hide)
         self._bridge.text_prompt_show.connect(self._text_popup.show_at)
+        self._bridge.path_show.connect(self._path.show_path)
+        self._bridge.path_hide.connect(self._path.hide_path)
+        self._bridge.highlight_show.connect(self._highlight.show_highlight)
+        self._bridge.highlight_hide.connect(self._highlight.hide_highlight)
 
         self._text_popup.submitted.connect(self._on_voiceless_submitted)
 
