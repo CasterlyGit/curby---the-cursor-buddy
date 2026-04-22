@@ -1,6 +1,7 @@
 import threading
 import tempfile
 import os
+from collections.abc import Callable
 import numpy as np
 import sounddevice as sd
 import scipy.io.wavfile as wav
@@ -13,6 +14,18 @@ SILENCE_SECONDS = 1.0         # stop after this much silence
 MAX_SECONDS = 15              # hard cap
 
 _tts_lock = threading.Lock()
+
+# Hooks so the continuous listener can pause/resume the mic during TTS playback
+# (otherwise the listener hears curby's own voice and feedback-loops).
+_on_speak_start: Callable[[], None] | None = None
+_on_speak_end: Callable[[], None] | None = None
+
+
+def set_speak_callbacks(on_start: Callable[[], None] | None = None,
+                        on_end:   Callable[[], None] | None = None) -> None:
+    global _on_speak_start, _on_speak_end
+    _on_speak_start = on_start
+    _on_speak_end = on_end
 
 
 def listen_once() -> str:
@@ -62,16 +75,28 @@ def _sanitize(text: str) -> str:
 
 
 def speak(text: str, block: bool = False) -> None:
-    """Speak text via Windows SAPI5 TTS. Non-blocking by default; block=True waits."""
+    """Speak text via Windows SAPI5 TTS. Non-blocking by default; block=True waits.
+
+    Pauses any registered continuous listener while speaking so the mic doesn't
+    pick up curby's own voice.
+    """
     clean = _sanitize(text)
     def _run():
         with _tts_lock:
-            engine = pyttsx3.init()
-            engine.setProperty("rate", 165)
-            engine.setProperty("volume", 0.9)
-            engine.say(clean)
-            engine.runAndWait()
-            engine.stop()
+            try:
+                if _on_speak_start:
+                    try: _on_speak_start()
+                    except Exception: pass
+                engine = pyttsx3.init()
+                engine.setProperty("rate", 165)
+                engine.setProperty("volume", 0.9)
+                engine.say(clean)
+                engine.runAndWait()
+                engine.stop()
+            finally:
+                if _on_speak_end:
+                    try: _on_speak_end()
+                    except Exception: pass
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     if block:

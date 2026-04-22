@@ -13,6 +13,8 @@ from src.speech_bubble import SpeechBubble
 from src.text_input_popup import TextInputPopup
 from src.guide_path import GuidePath
 from src.action_highlight import ActionHighlight
+from src.continuous_listener import ContinuousListener
+from src.status_window import StatusWindow
 
 HOTKEY_VOICE     = "<ctrl>+/"
 HOTKEY_VOICELESS = "<ctrl>+."
@@ -57,7 +59,8 @@ class AssistantWorker(QThread):
                  bridge: _Bridge, step_event: threading.Event,
                  get_pos: Callable[[], tuple[int, int]],
                  mode: str = "voice",
-                 typed_text: str | None = None):
+                 typed_text: str | None = None,
+                 heard_text: str | None = None):
         super().__init__()
         self.cx = cx
         self.cy = cy
@@ -68,6 +71,7 @@ class AssistantWorker(QThread):
         self._cancel = threading.Event()
         self.mode = mode                      # "voice" | "voiceless"
         self.typed_text = typed_text
+        self.heard_text = heard_text          # pretranscribed (skip mic)
         self.guided_waiting = False
 
     # ── Main pipeline ──────────────────────────────────────────────────────────
@@ -79,9 +83,15 @@ class AssistantWorker(QThread):
 
         voiceless = (self.mode == "voiceless")
 
-        # ── Acquire user text (mic or typed) ──
+        # ── Acquire user text (typed, pretranscribed, or live mic) ──
         if voiceless:
             text = (self.typed_text or "").strip()
+            if not text:
+                self.state.emit("idle")
+                self.finished.emit()
+                return
+        elif self.heard_text:
+            text = self.heard_text.strip()
             if not text:
                 self.state.emit("idle")
                 self.finished.emit()
@@ -352,12 +362,14 @@ class CurbyApp:
         self._text_popup = TextInputPopup()
         self._path = GuidePath()
         self._highlight = ActionHighlight()
+        self._status = StatusWindow()
         self._cursor = CursorTracker(on_move=self._on_move)
         self._hotkey = keyboard.GlobalHotKeys({
             HOTKEY_VOICE:     self._on_voice_hotkey,
             HOTKEY_VOICELESS: self._on_voiceless_hotkey,
         })
         self._worker: AssistantWorker | None = None
+        self._listener: ContinuousListener | None = None
         self._cx = 0
         self._cy = 0
         self._history: list[dict] = []
@@ -372,6 +384,7 @@ class CurbyApp:
         self._bridge.voice_hotkey_fired.connect(self._activate_voice)
         self._bridge.voiceless_hotkey_fired.connect(self._activate_voiceless)
         self._bridge.set_state.connect(self._ghost.set_state)
+        self._bridge.set_state.connect(self._status.set_state)
         self._bridge.guide_show.connect(self._ghost.show_at)
         self._bridge.guide_to.connect(self._ghost.animate_to)
         self._bridge.guide_hide.connect(self._ghost.release)
@@ -386,6 +399,14 @@ class CurbyApp:
         self._bridge.highlight_hide.connect(self._highlight.hide_highlight)
 
         self._text_popup.submitted.connect(self._on_voiceless_submitted)
+
+        # Wire TTS so the continuous listener pauses while curby is speaking —
+        # otherwise the mic would pick up its own voice.
+        from src.voice_io import set_speak_callbacks
+        set_speak_callbacks(
+            on_start=self._on_speak_start,
+            on_end=self._on_speak_end,
+        )
 
     # ── Event handlers ─────────────────────────────────────────────────────────
 
@@ -416,17 +437,86 @@ class CurbyApp:
         self._history.append({"user": user_text, "assistant": assistant_reply})
         if len(self._history) > MAX_HISTORY:
             self._history = self._history[-MAX_HISTORY:]
+        # Show in status window
+        if user_text:
+            self._status.push_heard(user_text)
+        if assistant_reply and assistant_reply != "(guided session)":
+            self._status.push_said(assistant_reply)
+
+    # ── Continuous listener ───────────────────────────────────────────────────
+
+    def _listener_running(self) -> bool:
+        return self._listener is not None and self._listener.isRunning()
+
+    def _start_listener(self):
+        if self._listener_running():
+            return
+        self._listener = ContinuousListener()
+        self._listener.waiting.connect(lambda: self._ghost.set_state("listening"))
+        self._listener.waiting.connect(lambda: self._status.set_state("listening"))
+        self._listener.captured.connect(self._on_listener_captured)
+        self._listener.utterance.connect(self._on_listener_utterance)
+        self._listener.listen_error.connect(lambda m: self._status.push_error(m))
+        self._listener.start()
+        self._status.push_status("listening — talk to me anytime.")
+        from src.voice_io import speak
+        speak("listening.")
+
+    def _stop_listener(self):
+        if self._listener is not None:
+            self._listener.stop()
+            self._listener.quit()
+            self._listener = None
+        self._ghost.set_state("idle")
+        self._status.set_state("idle")
+        self._status.push_status("paused. tap the hotkey to turn me back on.")
+        from src.voice_io import speak
+        speak("stopped listening.")
+
+    def _on_listener_captured(self, text: str):
+        self._status.set_state("thinking")
+        self._status.push_heard(text)
+        self._ghost.set_state("thinking")
+
+    def _on_listener_utterance(self, text: str):
+        # Cancel anything in flight — user spoke, new intent wins
+        with self._worker_lock:
+            if self._worker and self._worker.isRunning():
+                self._worker._cancel.set()
+                self._restart_pending = False
+                self._bridge.guide_hide.emit()
+                self._bridge.bubble_hide.emit()
+        # Kick off a worker with the transcribed text
+        self._start_worker(mode="voice", heard_text=text)
+
+    def _on_speak_start(self):
+        # Pause the mic while curby is talking so it doesn't hear itself
+        if self._listener is not None:
+            self._listener.pause()
+
+    def _on_speak_end(self):
+        # Resume mic, unless a worker is still processing
+        if (self._listener is not None
+                and not (self._worker and self._worker.isRunning())):
+            self._listener.resume()
 
     def _on_worker_finished(self):
         with self._worker_lock:
             restart = self._restart_pending
             self._restart_pending = False
+        # Resume the continuous listener once the worker is done processing
+        if self._listener is not None and not self._listener.is_paused():
+            pass  # already unpaused
+        elif self._listener is not None:
+            self._listener.resume()
         if restart:
             self._start_worker(self._pending_mode, self._pending_text)
 
     # ── Worker lifecycle ───────────────────────────────────────────────────────
 
-    def _start_worker(self, mode: str = "voice", typed_text: str | None = None):
+    def _start_worker(self, mode: str = "voice",
+                      typed_text: str | None = None,
+                      heard_text: str | None = None):
         with self._worker_lock:
             w = AssistantWorker(
                 self._cx, self._cy, self._history,
@@ -434,8 +524,10 @@ class CurbyApp:
                 get_pos=lambda: (self._cx, self._cy),
                 mode=mode,
                 typed_text=typed_text,
+                heard_text=heard_text,
             )
             w.state.connect(self._ghost.set_state)
+            w.state.connect(self._status.set_state)
             w.exchange.connect(self._on_exchange)
             w.finished.connect(self._on_worker_finished)
             self._worker = w
@@ -443,9 +535,10 @@ class CurbyApp:
 
     def _activate_voice(self):
         """Hotkey behavior:
-          - guided session waiting for next step → ADVANCE
-          - running non-guided → cancel + restart voice
-          - idle → start fresh voice
+          - guided session waiting  → ADVANCE step
+          - worker running (not waiting) → cancel it
+          - no worker, listener running  → stop listener (pause always-on mode)
+          - no worker, listener stopped  → start listener (begin always-on mode)
         """
         with self._worker_lock:
             w = self._worker
@@ -459,15 +552,20 @@ class CurbyApp:
         if running:
             with self._worker_lock:
                 self._worker._cancel.set()
-                self._restart_pending = True
-                self._pending_mode = "voice"
-                self._pending_text = None
+                self._restart_pending = False
             self._bridge.guide_hide.emit()
             self._bridge.bubble_hide.emit()
             self._ghost.set_state("idle")
+            self._status.set_state("idle")
+            # Resume the listener so the next utterance is captured
+            if self._listener is not None:
+                self._listener.resume()
             return
 
-        self._start_worker(mode="voice")
+        if self._listener_running():
+            self._stop_listener()
+        else:
+            self._start_listener()
 
     def _activate_voiceless(self):
         """Hotkey behavior:
@@ -507,16 +605,23 @@ class CurbyApp:
         from src.voice_io import speak
         pos = QCursor.pos()
         self._cx, self._cy = pos.x(), pos.y()
-        # Fairy is always visible now — position it once, it will start bobbing from there
         self._ghost.follow(self._cx, self._cy)
+
+        # Status window appears in top-right by default
+        self._status.place_default()
+        self._status.show()
+        self._status.push_status(f"tap {HOTKEY_VOICE} to start listening.")
 
         self._cursor.start()
         self._hotkey.start()
         speak("curby ready.")
         print(f"Curby ready.")
-        print(f"  Voice mode:     press {HOTKEY_VOICE}")
-        print(f"  Voiceless mode: press {HOTKEY_VOICELESS}")
+        print(f"  Voice (always-listen): tap {HOTKEY_VOICE}  (again to stop)")
+        print(f"  Type prompt:           tap {HOTKEY_VOICELESS}")
+        print(f"  Advance guided step:   tap {HOTKEY_VOICE} or {HOTKEY_VOICELESS}")
         code = self._qt.exec()
+        if self._listener is not None:
+            self._listener.stop()
         self._cursor.stop()
         self._hotkey.stop()
         return code
