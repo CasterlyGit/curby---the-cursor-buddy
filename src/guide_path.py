@@ -1,9 +1,9 @@
-"""Full-screen transparent overlay that draws a dotted bezier path from the user's
-cursor to the current guidance target. Dots brighten sequentially as the fairy
-moves along the path — 'fairy footsteps'.
+"""Full-screen transparent overlay that draws a dotted path from the user's cursor
+to the current guidance target. Dots light up sequentially as the fairy moves
+along the path.
 
-Click-through. Reconfigures to cover the virtual desktop bounds so it works across
-monitors.
+The effect should read as a single path-to-follow, not a string of colored
+lights — tight spacing, single accent color, small dots.
 """
 import ctypes
 import math
@@ -13,16 +13,18 @@ from PyQt6.QtWidgets import QWidget, QApplication
 from PyQt6.QtCore import Qt, QPointF, QTimer
 from PyQt6.QtGui import QPainter, QColor, QRadialGradient
 
-PINK_SOFT = QColor(244, 114, 182)
-SKY       = QColor(125, 211, 252)
-BLUE      = QColor( 96, 165, 250)
+# Single accent color — matches pointing-mode body so the trail reads as one piece
+TRAIL = QColor(125, 211, 252)   # sky-300
+TRAIL_EDGE = QColor(79, 70, 229)  # indigo edge on destination
 WHITE_HOT = QColor(255, 255, 255)
 
-ANIM_MS   = 950      # should match GhostCursor.animate_to default
-HOLD_MS   = 1800     # stay visible this long after arrival
-FADE_MS   = 500      # then fade
+ANIM_MS = 950
+HOLD_MS = 1800
+FADE_MS = 500
 
-STEP_DOTS = 18       # number of footprints along the path
+STEP_DOTS = 44          # dense — reads as a continuous path, not discrete lights
+DOT_CORE_R = 1.6
+DOT_HALO_R = 5
 
 _GWL_EXSTYLE       = -20
 _WS_EX_TRANSPARENT = 0x00000020
@@ -44,7 +46,7 @@ class GuidePath(QWidget):
         self._start: tuple[float, float] | None = None
         self._end: tuple[float, float] | None = None
         self._t_start: float = 0.0
-        self._t_arrived: float = 0.0  # set when hide_path is called (begin fade)
+        self._t_arrived: float = 0.0
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -54,13 +56,11 @@ class GuidePath(QWidget):
         scr = QApplication.primaryScreen()
         if scr is None:
             return
-        vg = scr.virtualGeometry()
-        self.setGeometry(vg)
+        self.setGeometry(scr.virtualGeometry())
 
     def show_path(self, sx: int, sy: int, ex: int, ey: int):
         self._cover_virtual()
         vg = self.geometry()
-        # Convert absolute screen coords into widget-local coords
         self._start = (sx - vg.left(), sy - vg.top())
         self._end   = (ex - vg.left(), ey - vg.top())
         self._t_start = time.time()
@@ -71,8 +71,6 @@ class GuidePath(QWidget):
     def hide_path(self):
         if self._t_arrived == 0.0:
             self._t_arrived = time.time()
-
-    # ── Tick ─────────────────────────────────────────────────────────────────
 
     def _tick(self):
         if self._t_arrived > 0.0:
@@ -91,8 +89,6 @@ class GuidePath(QWidget):
         except Exception:
             pass
 
-    # ── Paint ────────────────────────────────────────────────────────────────
-
     def paintEvent(self, event):
         if self._start is None or self._end is None:
             return
@@ -101,9 +97,8 @@ class GuidePath(QWidget):
 
         now = time.time()
         elapsed_ms = (now - self._t_start) * 1000
-        anim_progress = max(0.0, min(1.0, elapsed_ms / ANIM_MS))
+        progress = max(0.0, min(1.0, elapsed_ms / ANIM_MS))
 
-        # Overall opacity (fade out after hold)
         overall = 1.0
         if self._t_arrived > 0.0:
             ms_since = (now - self._t_arrived) * 1000
@@ -115,9 +110,9 @@ class GuidePath(QWidget):
         sx, sy = self._start
         ex, ey = self._end
         dx, dy = ex - sx, ey - sy
-        # Control point for a gentle arc (perpendicular offset)
-        cx_ctrl = (sx + ex) / 2 - dy * 0.18
-        cy_ctrl = (sy + ey) / 2 + dx * 0.18
+        # Gentle arc — enough to feel guided, not enough to feel curvy
+        cx_ctrl = (sx + ex) / 2 - dy * 0.12
+        cy_ctrl = (sy + ey) / 2 + dx * 0.12
 
         for i in range(STEP_DOTS):
             t = (i + 0.5) / STEP_DOTS
@@ -125,39 +120,34 @@ class GuidePath(QWidget):
             bx = u * u * sx + 2 * u * t * cx_ctrl + t * t * ex
             by = u * u * sy + 2 * u * t * cy_ctrl + t * t * ey
 
-            # Dot brightness: ones BEHIND the fairy glow; ones ahead are dim.
-            behind = t <= anim_progress
-            glow_age = max(0.0, anim_progress - t)
-            if behind:
-                intensity = max(0.15, 1.0 - glow_age * 1.6)
+            # Behind the fairy → bright. Ahead → dim.
+            if t <= progress:
+                trail_age = progress - t
+                intensity = max(0.25, 1.0 - trail_age * 1.4)
             else:
                 intensity = 0.18
 
-            # Alternate colors for a sparkle-trail feel
-            color = SKY if (i % 2 == 0) else PINK_SOFT
-            c = QColor(color); c.setAlpha(int(220 * intensity * overall))
+            alpha_core = int(230 * intensity * overall)
+            alpha_halo = int(110 * intensity * overall)
 
-            # Dot with halo
-            halo = QRadialGradient(QPointF(bx, by), 9)
-            h0 = QColor(c); h0.setAlpha(int(220 * intensity * overall))
-            h1 = QColor(color); h1.setAlpha(int(80 * intensity * overall))
-            h2 = QColor(0, 0, 0, 0)
+            halo = QRadialGradient(QPointF(bx, by), DOT_HALO_R)
+            h0 = QColor(TRAIL); h0.setAlpha(alpha_halo)
+            h1 = QColor(TRAIL); h1.setAlpha(int(alpha_halo * 0.3))
             halo.setColorAt(0.0, h0)
-            halo.setColorAt(0.5, h1)
-            halo.setColorAt(1.0, h2)
+            halo.setColorAt(0.55, h1)
+            halo.setColorAt(1.0, QColor(0, 0, 0, 0))
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(halo)
-            p.drawEllipse(QPointF(bx, by), 9, 9)
+            p.drawEllipse(QPointF(bx, by), DOT_HALO_R, DOT_HALO_R)
 
-            # Solid core
-            core = QColor(WHITE_HOT); core.setAlpha(int(220 * intensity * overall))
+            core = QColor(WHITE_HOT); core.setAlpha(alpha_core)
             p.setBrush(core)
-            p.drawEllipse(QPointF(bx, by), 2.2, 2.2)
+            p.drawEllipse(QPointF(bx, by), DOT_CORE_R, DOT_CORE_R)
 
-        # Destination beacon — a wider ring that pulses as the fairy arrives
-        dest_alpha = int(200 * overall * (0.5 + 0.5 * anim_progress))
-        beacon = QColor(BLUE); beacon.setAlpha(dest_alpha)
+        # Destination beacon — clearly marks the end of the path
+        beacon_alpha = int(220 * overall)
+        ring_color = QColor(TRAIL_EDGE); ring_color.setAlpha(beacon_alpha)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(beacon)
-        pulse_r = 4 + 3 * math.sin(now * 4.5)
+        p.setBrush(ring_color)
+        pulse_r = 3.5 + 2 * math.sin(now * 4.5)
         p.drawEllipse(QPointF(ex, ey), pulse_r, pulse_r)
