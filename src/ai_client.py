@@ -28,19 +28,27 @@ _SYSTEM = (
 
 _GUIDED_SYSTEM = (
     "you are curby, guiding a user through a ui task one step at a time. "
-    "you can see a screenshot of the user's screen right now. "
-    "the image pixel coordinates map 1:1 to screen coordinates — measure carefully. "
-    "\n\n"
-    "rules:\n"
-    "- respond in all lowercase, conversational, warm. write for the ear.\n"
-    "- give ONE short instruction (under 10 words) for the single next visible action.\n"
-    "- only point at elements CURRENTLY VISIBLE in this screenshot. never predict future ui.\n"
-    "- end every response with a point tag on the same line: [POINT:x,y:label]\n"
-    "  where x,y is the pixel center of the target element in this screenshot.\n"
-    "- if the task is already complete or nothing actionable is visible, end with [POINT:none]\n"
-    "- output only the spoken instruction + point tag. no markdown, no extra text.\n"
-    "\nexample output:\n"
-    "click the file menu up top [POINT:48,22:File menu]"
+    "you can see a real screenshot of the user's screen right now.\n\n"
+    "BEFORE answering, silently look at the screenshot and identify:\n"
+    "1. which app / website is this (vs code, youtube, gmail, etc.)\n"
+    "2. what elements are actually visible: menus, buttons, icons, tabs, panels\n"
+    "3. which one advances the task\n\n"
+    "then respond:\n"
+    "- ONE short lowercase instruction (under 20 words) for the single next action\n"
+    "- only reference elements you can literally SEE in the screenshot\n"
+    "- never invent button names, menu labels, or text to type — if it's not visible, don't say it\n"
+    "- never output shell commands, keyboard shortcuts, or app names the user must run\n"
+    "- if the task looks already done, say 'looks like you're already there' and end with [POINT:none]\n"
+    "- if the next step is on a different screen (not this one), say so and end with [POINT:none]\n"
+    "\n"
+    "end every response with a point tag on the same line: [POINT:x,y:label]\n"
+    "where x,y is the pixel center of the exact element to click in this screenshot "
+    "(image is full screen, coordinates map 1:1 to screen pixels after scaling).\n"
+    "\n"
+    "examples:\n"
+    "click the three-dot menu next to the video [POINT:1820,240:more menu]\n"
+    "open the settings gear in the sidebar [POINT:62,740:settings gear]\n"
+    "use [POINT:none] if not applicable here"
 )
 
 # ── Image encoding ────────────────────────────────────────────────────────────
@@ -217,16 +225,27 @@ def ask_guided_step(
     steps_done: list[str],
 ) -> tuple[str, int | None, int | None]:
     """
-    Blocking call. Given the task, current screenshot, and steps done so far,
-    returns (spoken_text, x, y).
+    Blocking call. Returns (spoken_text, x, y).
     x/y are None if task is complete or nothing actionable is visible.
 
-    Uses the Clicky-style [POINT:x,y:label] embedded tag approach:
-    Claude speaks naturally AND embeds a pointer coordinate in the same response.
-    Image is sent at 1280px max (same as Clicky) — accurate and fast.
+    Dispatch:
+      - If ANTHROPIC_API_KEY is set → use direct Anthropic API + Computer Use tool
+        (pixel-calibrated, much more accurate — Clicky's approach).
+      - Otherwise → use the Claude CLI with the [POINT:x,y:label] text-tag format.
     """
+    # Prefer API path when available
+    try:
+        from src.ai_client_api import is_api_available, ask_guided_step_api
+        if is_api_available():
+            try:
+                return ask_guided_step_api(task, image, steps_done)
+            except Exception as e:
+                print(f"[api error] {e} — falling back to CLI")
+    except ImportError:
+        pass
+
     img_w, img_h = image.size
-    print(f"[guided] screenshot {img_w}x{img_h}")
+    print(f"[guided/cli] screenshot {img_w}x{img_h}")
 
     parts = [f"task: {task}"]
     if steps_done:
@@ -246,11 +265,11 @@ def ask_guided_step(
                 for block in obj["message"]["content"]:
                     if block.get("type") == "text":
                         raw = block["text"].strip()
-                        print(f"[guided] raw response: {raw!r}")
+                        print(f"[guided/cli] raw response: {raw!r}")
                         spoken, x, y = parse_point_tag(raw)
                         return spoken, x, y
         except (json.JSONDecodeError, KeyError):
             continue
 
-    print(f"[guided] no response parsed")
+    print(f"[guided/cli] no response parsed")
     return "sorry, i couldn't figure out the next step.", None, None

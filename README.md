@@ -10,8 +10,18 @@ For the full architecture, see [`design.md`](./design.md).
 
 - Windows 10 / 11
 - Python 3.14
-- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) on PATH (`claude.exe`)
+- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) on PATH (`claude.exe`) — fallback path
+- (Recommended) `ANTHROPIC_API_KEY` env var — enables Claude's **Computer Use** tool for pixel-calibrated guidance. Much more accurate than the CLI fallback; use this for real daily use.
 - Microphone + speakers (voice mode only)
+
+### Accuracy modes
+
+| mode | activation | accuracy |
+|---|---|---|
+| **API + Computer Use** (recommended) | `setx ANTHROPIC_API_KEY sk-ant-…` in a new shell | pixel-exact |
+| **CLI fallback** | default, no env var | vision-guess, ~30–80 px drift on complex UIs |
+
+Model selection: export `CURBY_MODEL=claude-sonnet-4-5` (default) or set a different model id.
 
 Install dependencies:
 ```powershell
