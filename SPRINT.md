@@ -58,9 +58,12 @@ Needs to show threading model — main thread (Qt), STT thread, LLM thread, TTS 
 ### 6. Version progression
 - Keep the current version state explicit while the active feature branch is
   conflicting or its checks are not green.
-- Tag `v0.4.0` only after the feature milestone is reconciled with the default
-  branch, the supported CI matrix passes, and README/benchmark claims are
-  re-verified at the release commit.
+- Preserve the existing `v0.4.0` release exactly as published. Its tag is not
+  an ancestor of the current default branch, so it must not be moved, recreated,
+  or presented as linear default-branch progression.
+- Assign a prospective next version only after the feature milestone and
+  release-line history are reconciled, the supported CI matrix and public guard
+  pass, and README/benchmark claims are re-verified at the release commit.
 - Release notes must distinguish measured latency evidence from design targets
   and summarize agent-dispatch behavior and remaining limits.
 
@@ -92,7 +95,8 @@ Examples:
 - [ ] docs/DESIGN.md with decision rationale
 - [ ] Benchmark script exists and output is in README
 - [ ] Version state and next eligible release condition documented
-- [ ] Release tagged only after the version eligibility gate passes
+- [ ] Existing `v0.4.0` lineage documented; next release tagged only after the
+  prospective version eligibility gate passes
 - [ ] Issues filed for roadmap items
 - [ ] CI still green
 
