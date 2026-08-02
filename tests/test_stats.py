@@ -3,8 +3,6 @@ import json
 import pathlib
 import sys
 
-import pytest
-
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 from src.stats import compute_stats, _load_events, _backend_breakdown_str, print_stats, save_summary
