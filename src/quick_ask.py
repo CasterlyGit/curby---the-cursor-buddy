@@ -21,7 +21,7 @@ _CLAUDE = os.environ.get("CLAUDE_CLI") or shutil.which("claude") or "claude"
 LOG_PATH = Path(os.path.expanduser("~/.curby/quick-ask-log.jsonl"))
 SESSION_PATH = Path(os.path.expanduser("~/.curby/quick-ask-session.json"))
 
-from src.eventlog import log_event as _log_structured, log_quick_ask  # noqa: E402
+from src.eventlog import log_event as _log_structured  # noqa: E402
 
 # Conversational follow-up window. A Ctrl+/ within this many seconds of the
 # last reply reuses prior context via `claude -p --continue`. After the
@@ -169,7 +169,7 @@ def speak_reply(text: str, *, register_handle=None) -> None:
     a SpeechHandle so the caller can call .stop() without knowing the
     underlying backend — no more hasattr duck-typing on the raw object.
     """
-    from src.speaker_protocol import AVSpeechHandle, SubprocessSpeechHandle, NullSpeechHandle
+    from src.speaker_protocol import AVSpeechHandle, SubprocessSpeechHandle
     import time as _t
     from src.voice_config import resolve_voice
     try:
@@ -235,5 +235,4 @@ def speak_reply(text: str, *, register_handle=None) -> None:
         speak(text, block=True)
     except Exception as e:
         print(f"[speak] fallback failed: {e}", flush=True)
-
 
