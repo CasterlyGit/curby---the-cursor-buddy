@@ -1,12 +1,11 @@
-# Curby — Portfolio Upgrade Sprint
+# Curby — Engineering Evidence Sprint
 
 ## Context: why this sprint exists
 
-The owner (Tarun) is a Google SDE2 candidate. The goal is not just "working software" —
-it's a repo that signals deep technical execution to a recruiter or engineer spending
-30 seconds on it. The benchmark is: every section of the README should be a system design
-talking point. Latency numbers must be *measured*, not claimed. Architecture must be
-scannable in < 60 seconds.
+The goal is to make the implemented engineering easy for a technical evaluator
+to verify. Every README statement should connect to source, tests, or a
+reproducible measurement. Latency numbers must be measured and scoped, not
+inferred. Architecture should be quickly scannable.
 
 Reference: look at how emergency-ai (~/Documents/Dev/emergency-ai) is structured.
 That's the bar. But go deeper than that — curby is technically richer.
@@ -22,10 +21,10 @@ That's the bar. But go deeper than that — curby is technically richer.
 - Structured logging, `curby log` command
 - Agent dispatch with sandbox + puck UI
 
-## What's missing for portfolio-grade
+## What's missing for a complete evaluation path
 
 ### 1. The README doesn't surface *why* curby is technically hard
-A Google engineer reading it should immediately see:
+A technical reader should immediately see:
 - **Why ~1.5s is hard** — breakdown of each phase and what optimization was needed
 - **Why AVSpeechSynthesizer over `say`** — subprocess startup cost, how prewarm works, what was measured
 - **Why two modes (quick-ask vs agent dispatch) require different architectures** — thread model, sandbox isolation, puck lifecycle
@@ -56,9 +55,14 @@ Needs to show threading model — main thread (Qt), STT thread, LLM thread, TTS 
 - Assert a reply comes back within 2s
 - Runnable in CI (mocked STT + mocked LLM)
 
-### 6. GitHub release v0.4
-- Tag v0.4.0
-- Release notes: latency before/after AVSpeechSynthesizer, prewarm impact, agent dispatch
+### 6. Version progression
+- Keep the current version state explicit while the active feature branch is
+  conflicting or its checks are not green.
+- Tag `v0.4.0` only after the feature milestone is reconciled with the default
+  branch, the supported CI matrix passes, and README/benchmark claims are
+  re-verified at the release commit.
+- Release notes must distinguish measured latency evidence from design targets
+  and summarize agent-dispatch behavior and remaining limits.
 
 ### 7. File 4–6 GitHub issues from the roadmap
 Real issues with context, not just README bullet points. Shows active maintenance.
@@ -87,13 +91,14 @@ Examples:
 - [ ] "How the latency was achieved" section — each optimization named and explained
 - [ ] docs/DESIGN.md with decision rationale
 - [ ] Benchmark script exists and output is in README
-- [ ] GitHub release tagged
+- [ ] Version state and next eligible release condition documented
+- [ ] Release tagged only after the version eligibility gate passes
 - [ ] Issues filed for roadmap items
 - [ ] CI still green
 
 ---
 
-## The "Google interview" framing for curby
+## Engineering evidence
 
 Curby proves:
 - You understand **latency decomposition** — you know which phase costs what and why
